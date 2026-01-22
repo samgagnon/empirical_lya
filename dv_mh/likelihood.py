@@ -151,15 +151,62 @@ def mh(muv):
     gamma = 0.4*(muv >= muv_inflection) - 0.7
     return gamma * (muv - muv_inflection) + 11.75
 
+def double_power(x, a, b1, b2, c):
+    """
+    Double power law function.
+    """
+    x = x - c
+    return a + x + np.log10(10**(x*b1) + 10**(x*b2))
+
+def sigmoid(x, L, x0, k, b):
+    """
+    Sigmoid function.
+    """
+    return L / (1 + np.exp(-k*(x - x0))) + b
+
+def lorentzian(x, x0, gamma, a, b):
+    """
+    Lorentzian function.
+    """
+    return a * (gamma**2) / ((x - x0)**2 + gamma**2) + b
+
+def mh_from_muv(muv):
+    """
+    Get log10 halo mass from UV magnitude using the fitted skew normal parameters.
+    """
+    # https://en.wikipedia.org/wiki/Skew_normal_distribution
+    # https://stats.stackexchange.com/questions/316314/sampling-from-skew-normal-distribution
+    popt_mu = [11.50962787, -1.25471915, -2.12854869, -21.99916644]
+    popt_std = [-0.50714459, -20.92567604, 1.72699987, 0.72541845]
+    popt_alpha = [-2.13037242e+01, 1.83486155e+00, 2.49700612e+00, 8.04770033e-03]
+    mu_val = double_power(muv, *popt_mu)
+    std_val = sigmoid(muv, *popt_std)
+    alpha_val = lorentzian(muv, *popt_alpha)
+    standard_normal_samples = np.random.normal(0, 1, size=len(muv))
+    p_flip = 0.5 * (1 + erf(-1*alpha_val*standard_normal_samples / np.sqrt(2)))
+    u_samples = np.random.uniform(0, 1, size=len(muv))
+    standard_normal_samples[u_samples < p_flip] *= -1
+    standard_normal_samples *= std_val
+    mh_samples = standard_normal_samples + mu_val
+    return mh_samples
+
 def vcirc(muv):
     """
     Returns circular velocity in km/s as a function of MUV 
     at redshift 5.0.
     """
-    log10_mh = mh(muv)
+    log10_mh = mh_from_muv(muv)
     return (log10_mh - 5.62)/3
 
-def p_obs(lly, dv, lha, muv, theta, mode='wide'):
+def t_cgm(dv, muv):
+    """
+    CGM transmission as a function of velocity offset and MUV.
+    """
+    v_circ = vcirc(muv)
+    tcgm = 0.5 * (1 - erf(1.25*((10**v_circ - dv)/(dv + 34))))
+    return tcgm
+
+def p_obs(lly, lha, muv, theta, mode='wide'):
     """
     Probability of observing a galaxy with given Lya luminosity, H-alpha luminosity, and UV magnitude.
     """
@@ -170,7 +217,6 @@ def p_obs(lly, dv, lha, muv, theta, mode='wide'):
     luv = 10**(0.4*(51.64 - muv))
     w_emerg = (1215.67/2.47e15)*(lly/luv)
     f_ha_lim = fh*2e-18  # H-alpha flux limit in erg/s/cm^2
-    v_lim = 10**vcirc(muv)
     if mode == 'wide':
         w_lim = 80*w1 # 80
         f_lya_lim = f1*2e-17 # 2e-17
@@ -184,22 +230,12 @@ def p_obs(lly, dv, lha, muv, theta, mode='wide'):
     # results in a mean of -18.7 reveals a value of -17.68, however 
     # we are likely still biased lower by w and f selections, so we take -17.75
 
-    p_v = normal_cdf(dv, (6/5)*v_lim)
     p_lya = normal_cdf(f_lya, f_lya_lim)
     p_ha = normal_cdf(f_ha, f_ha_lim)
     p_w = normal_cdf(w_emerg, w_lim)
     p_muv = 1 - normal_cdf(10**muv, 6*(10**muv_lim))
     
-    return p_lya * p_ha * p_w * p_muv * p_v
-
-def p_f(_p_obs, f, fe):
-    _f = np.sum(_p_obs) / len(_p_obs)
-    _f_err = _f * np.sqrt((np.sqrt(len(_p_obs)) / len(_p_obs))**2 + (fe/f)**2)
-    dist = np.exp(-0.5 * ((f - _f) / _f_err) ** 2)
-    if np.isinf(dist):
-        dist = 100
-    # get Gaussian distance from expected observed fraction
-    return dist
+    return p_lya * p_ha * p_w * p_muv
 
 def line(x, m, b):
     """
@@ -210,8 +246,9 @@ def line(x, m, b):
 XWIDE = np.array([np.log10(lum_lya_wide), dv_wide, np.log10(lum_ha_wide)])
 XDEEP = np.array([np.log10(lum_lya_deep), dv_deep, np.log10(lum_ha_deep)])
 
+savedir = '../data/cgm/'
 # Y = PCA T of X
-os.makedirs('../data/pca', exist_ok=True)
+os.makedirs(f'{savedir}', exist_ok=True)
 
 # pca = PCA(n_components=3)  # Keeping all 3 dimensions
 
@@ -219,9 +256,9 @@ os.makedirs('../data/pca', exist_ok=True)
 XALL = np.concatenate((XWIDE, XDEEP), axis=1)
 
 XC = XALL.mean(axis=1, keepdims=True)
-np.save('../data/pca/xc.npy', XC)
+np.save(f'{savedir}/xc.npy', XC)
 XSTD = XALL.std(axis=1, keepdims=True)
-np.save('../data/pca/xstd.npy', XSTD)
+np.save(f'{savedir}/xstd.npy', XSTD)
 XALL0 = (XALL - XC) / XSTD
 
 I = np.array([[1,0,0],[0,1,0],[0,0,1]])
@@ -229,7 +266,7 @@ A1 = np.array([[0,0,0],[0,0,-1],[0,1,0]])
 A2 = np.array([[0,0,1],[0,0,0],[-1,0,0]])
 A3 = np.array([[0,-1,0],[1,0,0],[0,0,0]])
 c1, c2, c3, c4 = 1, 1, 1/3, -1
-# c1, c2, c3, c4 = np.load('../data/pca/coefficients.npy')
+# c1, c2, c3, c4 = np.load(f'{savedir}/coefficients.npy')
 T = c1 * I + c2 * A1 + c3 * A2 + c4 * A3
 
 YALL = np.linalg.inv(T) @ XALL0
@@ -246,8 +283,8 @@ def fit():
     """
 
     NBINS = 20
-    xc = np.load('../data/pca/xc.npy')
-    xstd = np.load('../data/pca/xstd.npy')
+    xc = np.load(f'{savedir}/xc.npy')
+    xstd = np.load(f'{savedir}/xstd.npy')
 
     muv_centers = np.linspace(-20, -17, NBINS)
     f = np.zeros((NBINS, 2))
@@ -307,14 +344,14 @@ def fit():
         ew_mean[i, 1] = np.mean(ew_deep[np.abs(muv_deep - muv) < 0.5])
         ew_std[i, 1] = np.std(ew_deep[np.abs(muv_deep - muv) < 0.5])
 
-    np.save('../data/pca/f.npy', f)
-    np.save('../data/pca/f_err.npy', f_err)
-    np.save('../data/pca/lly_mean.npy', lly_mean)
-    np.save('../data/pca/dv_mean.npy', dv_mean)
-    np.save('../data/pca/lha_mean.npy', lha_mean)
-    np.save('../data/pca/lly_std.npy', lly_std)
-    np.save('../data/pca/dv_std.npy', dv_std)
-    np.save('../data/pca/lha_std.npy', lha_std)
+    np.save(f'{savedir}/f.npy', f)
+    np.save(f'{savedir}/f_err.npy', f_err)
+    np.save(f'{savedir}/lly_mean.npy', lly_mean)
+    np.save(f'{savedir}/dv_mean.npy', dv_mean)
+    np.save(f'{savedir}/lha_mean.npy', lha_mean)
+    np.save(f'{savedir}/lly_std.npy', lly_std)
+    np.save(f'{savedir}/dv_std.npy', dv_std)
+    np.save(f'{savedir}/lha_std.npy', lha_std)
 
     def objective(params):
         m1, m2, m3, b1, b2, b3, std1, std2, std3, w1, w2, f1, f2, fh = params
@@ -338,14 +375,18 @@ def fit():
         dv = dv * xstd[1] + xc[1]
         lha = lha * xstd[2] + xc[2]
 
+        # Apply CGM transmission
+        tcgm = t_cgm(dv.flatten(), np.tile(muv_centers, 1000)).reshape((1000, NBINS))
+        lly += np.log10(tcgm)
+
         logp = 0
 
         use_fobs = True  # Whether to use the observed fraction in the likelihood
         # use_fobs = False  # For testing without observed fraction
 
         # calculate the distance from the expected observed fraction
-        _p_obs_wide = p_obs(10**lly, dv, 10**lha, muv_centers.reshape((1, 20)), theta, mode='wide')
-        _p_obs_deep = p_obs(10**lly, dv, 10**lha, muv_centers.reshape((1, 20)), theta, mode='deep')
+        _p_obs_wide = p_obs(10**lly, 10**lha, muv_centers.reshape((1, 20)), theta, mode='wide')
+        _p_obs_deep = p_obs(10**lly, 10**lha, muv_centers.reshape((1, 20)), theta, mode='deep')
 
         if use_fobs:
 
@@ -394,16 +435,18 @@ def fit():
             logp += np.sum(p_wide) + np.sum(p_deep)
 
         if -1*logp < 50:
-            np.save('../data/pca/fit_params.npy', params)
+            np.save(f'{savedir}/fit_params.npy', params)
 
         return -1*logp
 
     bounds = [(-1, 1)]*3 + [(-3, 3)]*3 + [(0.01, 1)]*3 + [(0.5, 1.5)]*5
-    
+
+    # result = differential_evolution(objective, x0=x0, bounds=bounds, maxiter=100, \
+    #                                  popsize=5, disp=True)
     result = differential_evolution(objective, bounds=bounds, maxiter=500, mutation=(0.1, 1.9), \
                                      popsize=20, disp=True, recombination=0.5)
     all_params = result.x
-    np.save('../data/pca/fit_params.npy', all_params)
+    np.save(f'{savedir}/fit_params.npy', all_params)
     print("Fitted parameters:", result.x)
     return result.x
 
@@ -411,11 +454,11 @@ fit_params = fit()
 
 NBINS = 20
 muv_centers = np.linspace(-20, -17, NBINS)
-xc = np.load('../data/pca/xc.npy')
-xstd = np.load('../data/pca/xstd.npy')
-f = np.load('../data/pca/f.npy')
-f_err = np.load('../data/pca/f_err.npy')
-m1, m2, m3, b1, b2, b3, std1, std2, std3, w1, w2, f1, f2, fh = np.load('../data/pca/fit_params.npy')
+xc = np.load(f'{savedir}/xc.npy')
+xstd = np.load(f'{savedir}/xstd.npy')
+f = np.load(f'{savedir}/f.npy')
+f_err = np.load(f'{savedir}/f_err.npy')
+m1, m2, m3, b1, b2, b3, std1, std2, std3, w1, w2, f1, f2, fh = np.load(f'{savedir}/fit_params.npy')
 theta = [w1, w2, f1, f2, fh]
 
 # Fit the PCA coefficients to the observed fraction of LyA+Ha emitters
@@ -435,8 +478,12 @@ lly, _, lha = X0[:,0,:], X0[:,1,:], X0[:,2,:]
 lly = lly * xstd[0] + xc[0]
 lha = lha * xstd[2] + xc[2]
 
-_p_obs_wide = p_obs(10**lly, dv, 10**lha, muv_centers.reshape((1, 20)), theta, mode='wide')
-_p_obs_deep = p_obs(10**lly, dv, 10**lha, muv_centers.reshape((1, 20)), theta, mode='deep')
+# Apply CGM transmission
+tcgm = t_cgm(dv.flatten(), np.tile(muv_centers, 1000)).reshape((1000, NBINS))
+lly += np.log10(tcgm)
+
+_p_obs_wide = p_obs(10**lly, 10**lha, muv_centers.reshape((1, 20)), theta, mode='wide')
+_p_obs_deep = p_obs(10**lly, 10**lha, muv_centers.reshape((1, 20)), theta, mode='deep')
 
 f_wide = np.sum(_p_obs_wide, axis=0) / 1000
 f_deep = np.sum(_p_obs_deep, axis=0) / 1000
@@ -452,6 +499,5 @@ axs.set_xlabel(r'${\rm M}_{\rm UV}$', fontsize=font_size)
 axs.set_yscale('log')
 axs.legend(fontsize=int(font_size/1.5), loc='lower left')
 
-figures_dir = '../out/cgm'
-os.makedirs(figures_dir, exist_ok=True)
+figures_dir = '../out'
 plt.savefig(f'{figures_dir}/fobs.pdf')

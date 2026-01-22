@@ -41,6 +41,61 @@ alpha_5 = -1.74
 
 lum_flux_factor = 4*np.pi*(Planck18.luminosity_distance(5.0).to('cm').value)**2
 
+def double_power(x, a, b1, b2, c):
+    """
+    Double power law function.
+    """
+    x = x - c
+    return a + x + np.log10(10**(x*b1) + 10**(x*b2))
+
+def sigmoid(x, L, x0, k, b):
+    """
+    Sigmoid function.
+    """
+    return L / (1 + np.exp(-k*(x - x0))) + b
+
+def lorentzian(x, x0, gamma, a, b):
+    """
+    Lorentzian function.
+    """
+    return a * (gamma**2) / ((x - x0)**2 + gamma**2) + b
+
+def mh_from_muv(muv):
+    """
+    Get log10 halo mass from UV magnitude using the fitted skew normal parameters.
+    """
+    # https://en.wikipedia.org/wiki/Skew_normal_distribution
+    # https://stats.stackexchange.com/questions/316314/sampling-from-skew-normal-distribution
+    popt_mu = [11.50962787, -1.25471915, -2.12854869, -21.99916644]
+    popt_std = [-0.50714459, -20.92567604, 1.72699987, 0.72541845]
+    popt_alpha = [-2.13037242e+01, 1.83486155e+00, 2.49700612e+00, 8.04770033e-03]
+    mu_val = double_power(muv, *popt_mu)
+    std_val = sigmoid(muv, *popt_std)
+    alpha_val = lorentzian(muv, *popt_alpha)
+    standard_normal_samples = np.random.normal(0, 1, size=len(muv))
+    p_flip = 0.5 * (1 + erf(-1*alpha_val*standard_normal_samples / np.sqrt(2)))
+    u_samples = np.random.uniform(0, 1, size=len(muv))
+    standard_normal_samples[u_samples < p_flip] *= -1
+    standard_normal_samples *= std_val
+    mh_samples = standard_normal_samples + mu_val
+    return mh_samples
+
+def vcirc(muv):
+    """
+    Returns circular velocity in km/s as a function of MUV 
+    at redshift 5.0.
+    """
+    log10_mh = mh_from_muv(muv)
+    return (log10_mh - 5.62)/3
+
+def t_cgm(dv, muv):
+    """
+    CGM transmission as a function of velocity offset and MUV.
+    """
+    v_circ = vcirc(muv)
+    tcgm = 0.5 * (1 - erf(1.25*((10**v_circ - dv)/(dv + 34))))
+    return tcgm
+
 def schechter(muv, phi, muv_star, alpha):
     return (0.4*np.log(10))*phi*(10**(0.4*(muv_star - muv)))**(alpha+1)*\
         np.exp(-10**(0.4*(muv_star - muv)))
@@ -51,17 +106,19 @@ def line(x, m, b):
     """
     return m * (x + 18.5) + b
 
-# A = np.load('../data/pca/A.npy')
+# loaddir = '../data/pca'
+loaddir = '../data/cgm'
+# A = np.load(f'{loaddir}/A.npy')
 I = np.array([[1,0,0],[0,1,0],[0,0,1]])
 A1 = np.array([[0,0,0],[0,0,-1],[0,1,0]])
 A2 = np.array([[0,0,1],[0,0,0],[-1,0,0]])
 A3 = np.array([[0,-1,0],[1,0,0],[0,0,0]])
 c1, c2, c3, c4 = 1, 1, 1/3, -1
-# c1, c2, c3, c4 = np.load('../data/pca/coefficients.npy')
+# c1, c2, c3, c4 = np.load(f'{loaddir}/coefficients.npy')
 A = c1 * I + c2 * A1 + c3 * A2 + c4 * A3
-xc = np.load('../data/pca/xc.npy')
-xstd = np.load('../data/pca/xstd.npy')
-m1, m2, m3, b1, b2, b3, std1, std2, std3, w1, w2, f1, f2, fh = np.load('../data/pca/fit_params.npy')
+xc = np.load(f'{loaddir}/xc.npy')
+xstd = np.load(f'{loaddir}/xstd.npy')
+m1, m2, m3, b1, b2, b3, std1, std2, std3, w1, w2, f1, f2, fh = np.load(f'{loaddir}/fit_params.npy')
 # m1, m2, m3, b1, b2, b3, std1, std2, std3 = -0.05042401, -0.52413956, -0.36336859, \
 #     -0.91255108, -0.73920641, -0.4175795, 0.85332351, 0.45477191, 0.31269265
 theta = [w1, w2, f1, f2, fh]
@@ -86,6 +143,10 @@ y2 = np.random.normal(mu2, std2, NSAMPLES)
 y3 = np.random.normal(mu3, std3, NSAMPLES)
 Y = np.vstack((y1, y2, y3))
 X = (A @ Y) * xstd + xc
+
+# Apply CGM transmission
+tcgm = t_cgm(X[1], muv_sample)
+X[0] += np.log10(tcgm)
 
 # X[1] = 10**X[1]  # dv in km/s
 
@@ -166,6 +227,6 @@ axs[2,2].hist2d(X[2], X[2], bins=(lha_side, lha_side),
 axs[2,2].set_yticklabels([])
 axs[2,2].set_xlabel(r'$\log_{10}L_{\rm H\alpha}$ [erg/s]', fontsize=font_size)
 
-figures_dir = '/mnt/c/Users/sgagn/OneDrive/Documents/phd/lyman_alpha/figures/'
+figures_dir = '../out/'
 plt.savefig(f'{figures_dir}/prop_var.pdf', bbox_inches='tight')
 plt.show()

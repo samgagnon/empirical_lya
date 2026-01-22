@@ -48,42 +48,6 @@ phi_5 = 0.79
 muv_star_5 = -21.1
 alpha_5 = -1.74
 
-def get_beta_bouwens14(muv):
-    # https://arxiv.org/pdf/1306.2950
-    return -2.05 + -0.2*(muv+19.5)
-
-def schechter(muv, phi, muv_star, alpha):
-    return (0.4*np.log(10))*phi*(10**(0.4*(muv_star - muv)))**(alpha+1)*\
-        np.exp(-10**(0.4*(muv_star - muv)))
-
-def get_a(m):
-            return 0.65 + 0.1 * np.tanh(3 * (m + 20.75))
-
-def get_wc(m):
-    return 31 + 12 * np.tanh(4 * (m + 20.25))
-
-def mason2018(Muv):
-    """
-    Samples EW and emission probability from the
-    fit functions obtained by Mason et al. 2018.
-    """
-    A = get_a(Muv)
-    rv_A = np.random.uniform(0, 1, len(Muv))
-    emit_bool = rv_A < A
-    Wc = get_wc(Muv[emit_bool])
-    rv_W = np.random.uniform(0, 1, len(Wc))
-    W = -1*Wc*np.log(rv_W)
-    return W, emit_bool
-
-def mh(muv):
-    """
-    Returns log10 Mh in solar masses as a function of MUV.
-    """
-    redshift = 5.0
-    muv_inflection = -20.0 - 0.26*redshift
-    gamma = 0.4*(muv >= muv_inflection) - 0.7
-    return gamma * (muv - muv_inflection) + 11.75
-
 def double_power(x, a, b1, b2, c):
     """
     Double power law function.
@@ -138,6 +102,50 @@ def t_cgm(dv, muv):
     v_circ = vcirc(muv)
     tcgm = 0.5 * (1 - erf(1.25*((10**v_circ - dv)/(dv + 34))))
     return tcgm
+
+def get_beta_bouwens14(muv):
+    # https://arxiv.org/pdf/1306.2950
+    return -2.05 + -0.2*(muv+19.5)
+
+def schechter(muv, phi, muv_star, alpha):
+    return (0.4*np.log(10))*phi*(10**(0.4*(muv_star - muv)))**(alpha+1)*\
+        np.exp(-10**(0.4*(muv_star - muv)))
+
+def get_a(m):
+            return 0.65 + 0.1 * np.tanh(3 * (m + 20.75))
+
+def get_wc(m):
+    return 31 + 12 * np.tanh(4 * (m + 20.25))
+
+def mason2018(Muv):
+    """
+    Samples EW and emission probability from the
+    fit functions obtained by Mason et al. 2018.
+    """
+    A = get_a(Muv)
+    rv_A = np.random.uniform(0, 1, len(Muv))
+    emit_bool = rv_A < A
+    Wc = get_wc(Muv[emit_bool])
+    rv_W = np.random.uniform(0, 1, len(Wc))
+    W = -1*Wc*np.log(rv_W)
+    return W, emit_bool
+
+def mh(muv):
+    """
+    Returns log10 Mh in solar masses as a function of MUV.
+    """
+    redshift = 5.0
+    muv_inflection = -20.0 - 0.26*redshift
+    gamma = 0.4*(muv >= muv_inflection) - 0.7
+    return gamma * (muv - muv_inflection) + 11.75
+
+def vcirc(muv):
+    """
+    Returns circular velocity in km/s as a function of MUV 
+    at redshift 5.0.
+    """
+    log10_mh = mh(muv)
+    return (log10_mh - 5.62)/3
 
 def get_silverrush_laelf(z):
     if z==4.9:
@@ -206,7 +214,7 @@ dex_popt, _ = curve_fit(lambda x, a, b: a * x + b, muv_t24, muv_dex)
 
 NSAMPLES = 1000000
 
-muv_space = np.linspace(-24, -16, NSAMPLES)
+muv_space = np.linspace(-24, -18.25, NSAMPLES)
 p_muv = schechter(muv_space, phi_5, muv_star_5, alpha_5)
 n_gal = np.trapezoid(p_muv, x=muv_space)*1e-3 # galaxy number density in Mpc^-3
 EFFECTIVE_VOLUME = NSAMPLES/n_gal  # Mpc3, for normalization
@@ -216,33 +224,7 @@ muv_sample = np.random.choice(muv_space, size=NSAMPLES, p=p_muv)
 
 # Mason et al. (2018) model
 w_m18, emit_bool_m18 = mason2018(muv_sample)
-f10_m18 = np.sum(w_m18 > 10) / NSAMPLES
-f25_m18 = np.sum(w_m18 > 25) / NSAMPLES
-log10lya_m18 = np.log10(w_m18*(2.47e15/1215.67)*(1500/1215.67)**(get_beta_bouwens14(muv_sample[emit_bool_m18])+2)*\
-    10**(0.4*(51.6-muv_sample[emit_bool_m18])))
-heights_m18, bins_m18 = np.histogram(log10lya_m18, bins=bin_edges, density=False)
-bin_widths = bins_m18[1:]-bins_m18[:-1]
-height_err_m18 = np.sqrt(heights_m18) / bin_widths / EFFECTIVE_VOLUME
-heights_m18 = heights_m18 / bin_widths / EFFECTIVE_VOLUME
-logphi_m18 = np.log10(heights_m18)
-logphi_up_m18 = np.abs(np.log10(height_err_m18 + heights_m18) - logphi_m18)
-logphi_low_m18 = np.abs(logphi_m18 - np.log10(heights_m18 - height_err_m18))
-
-# Tang et al. (2024) model
-w_t24 = np.random.lognormal(mean=np.log(mean_t24(muv_sample)),
-                            sigma=sigma_t24(muv_sample),
-                            size=NSAMPLES)
-f10_t24 = np.sum(w_t24 > 10) / NSAMPLES
-f25_t24 = np.sum(w_t24 > 25) / NSAMPLES
-log10lya_t24 = np.log10(w_t24*(2.47e15/1215.67)*(1215.67/1500)**(get_beta_bouwens14(muv_sample)+2)*\
-    10**(0.4*(51.6-muv_sample)))
-heights_t24, bins_t24 = np.histogram(log10lya_t24, bins=bin_edges, density=False)
-bin_widths = bins_t24[1:]-bins_t24[:-1]
-height_err_t24 = np.sqrt(heights_t24) / bin_widths / EFFECTIVE_VOLUME
-heights_t24 = heights_t24 / bin_widths / EFFECTIVE_VOLUME
-logphi_t24 = np.log10(heights_t24)
-logphi_up_t24 = np.abs(np.log10(height_err_t24 + heights_t24) - logphi_t24)
-logphi_low_t24 = np.abs(logphi_t24 - np.log10(heights_t24 - height_err_t24))
+print(np.percentile(w_m18, 84), np.percentile(w_m18, 16), np.median(w_m18)/np.log(2))
 
 # Gagnon-Hartman et al. (2025) model
 loaddir = '../data/pca'
@@ -258,10 +240,48 @@ xstd = np.load(f'{loaddir}/xstd.npy')
 
 m1, m2, m3, b1, b2, b3, std1, std2, std3, w1, w2, f1, f2, fh = np.load(f'{loaddir}/fit_params.npy')
 
+# m_arr = np.array([m1, m2, m3])
+# b_arr = np.array([b1, b2, b3])
+# std_arr = np.array([std1, std2, std3])
+# covariance_matrix = A@np.diag(std_arr**2)@A.T
+# print(A@m_arr, A@b_arr)
+
+# print(xc, xstd)
+
+# print("Covariance matrix of the PCA components:")
+# print(covariance_matrix)
+# quit()
+
 u1, u2, u3 = np.random.normal(m1*(muv_sample + 18.5) + b1, std1, NSAMPLES), \
             np.random.normal(m2*(muv_sample + 18.5) + b2, std2, NSAMPLES), \
             np.random.normal(m3*(muv_sample + 18.5) + b3, std3, NSAMPLES)
 log10lya, dv, log10ha = (A @ np.array([u1, u2, u3]))* xstd + xc
+w_sgh = 10**(log10lya) / ( (2.47e15/1215.67)*(1215.67/1500)**(get_beta_bouwens14(muv_sample)+2)*\
+    10**(0.4*(51.6-muv_sample)) )
+
+# solve for lognormal distribution which fits my model
+# bins = np.linspace(0, 1000, 101)
+# hs, bs = np.histogram(w_sgh, bins=bins, density=True)
+# def objective(params):
+#     mean, scale = params
+#     samples = np.exp(np.random.normal(loc=np.log(mean), scale=scale, size=NSAMPLES))
+#     h, b = np.histogram(samples, bins=bins, density=True)
+#     return np.sum(hs*np.log((hs+1e-10)/(h+1e-10)))
+
+# from scipy.optimize import differential_evolution
+# result = differential_evolution(objective, bounds=[(20, 100), (0.1, 1.0)], maxiter=50, disp=True)
+# mean_sgh, scale_sgh = result.x
+# w_sgh_lognorm = np.exp(np.random.normal(loc=np.log(mean_sgh), scale=scale_sgh, size=NSAMPLES))
+
+# print("SGH model lognormal fit parameters:")
+# print("Mean:", mean_sgh)
+# print("Scale (sigma):", scale_sgh)
+
+# plt.hist(w_sgh, bins=bins, density=True, histtype='step', label='SGH model')
+# plt.hist(w_sgh_lognorm, bins=bins, density=True, histtype='step', label='SGH lognormal fit')
+# plt.legend()
+# plt.show()
+# quit()
 
 # Apply CGM transmission
 # tcgm = t_cgm(dv, muv_sample)
@@ -271,27 +291,64 @@ log10lya, dv, log10ha = (A @ np.array([u1, u2, u3]))* xstd + xc
 v_lim = 10**vcirc(muv_sample)
 select = dv > v_lim
 log10lya = log10lya[select]
+        
+bins = np.linspace(40, 1000, 101)
+# bins = np.linspace(0, 1000, 101)
 
-fig, ax = plt.subplots(figsize=(6, 6), constrained_layout=True)
+# tang+24 lognorm fit
+muv_c = np.array([-19.5, -18.5, -17.5])[:1]
+emu_t24_c = np.array([10, 16, 27])[:1]
+dex_t24_c = np.array([1.48, 1.75, 1.51])[:1]
+weights = schechter(muv_c, phi_5, muv_star_5, alpha_5)
+weights /= np.sum(weights)
 
-heights_sgh, bins_sgh = np.histogram(log10lya, bins=bin_edges, density=False)
-bin_widths = bins_sgh[1:]-bins_sgh[:-1]
-height_err_sgh = np.sqrt(heights_sgh) / bin_widths / EFFECTIVE_VOLUME
-heights_sgh = heights_sgh / bin_widths / EFFECTIVE_VOLUME
-logphi_sgh = np.log10(heights_sgh)
-logphi_up_sgh = np.abs(np.log10(heights_sgh + height_err_sgh) - logphi_sgh)
-logphi_low_sgh = np.abs(logphi_sgh - np.log10(heights_sgh - height_err_sgh))
+emu_t24 = np.sum(emu_t24_c * weights)
+dex_t24 = np.sum(dex_t24_c * weights)
 
-ax.errorbar(lum, logphi_sgh, yerr=[logphi_low_sgh, logphi_up_sgh],
-            fmt='*', markeredgewidth=2, markersize=20, fillstyle='none', color=color1, label='This Work')
-ax.errorbar(lum, logphi, yerr=[logphi_low, logphi_up], 
-            fmt='o', markeredgewidth=2, markersize=20, fillstyle='none', color=color4, label='Umeda+25')
-ax.errorbar(lum, logphi_m18, yerr=[logphi_low_m18, logphi_up_m18],
-            fmt='*', markeredgewidth=2, markersize=20, fillstyle='none', color=color3, label='Mason+18')
-ax.set_xlabel(r'$\log_{10} L_{\rm Ly\alpha}$ [erg s$^{-1}$]', fontsize=font_size)
-ax.set_ylabel(r'$\log_{10} \phi$ [Mpc$^{-3}$]', fontsize=font_size)
-ax.set_ylim(-8, -2)
-ax.legend(fontsize=int(font_size/1.5), loc='lower left')
+w_t24 = np.exp(np.random.normal(loc=np.log(emu_t24), scale=dex_t24, size=NSAMPLES))
+
+w_z14 = np.random.exponential(scale=7.3*(1 + 5)**1.7, size=NSAMPLES)
+
+h40, b40 = np.histogram(w_sgh[(w_sgh>40)*(w_sgh<200)], bins=100, density=True)
+b40_c = 0.5*(b40[1:] + b40[:-1])
+h1000, b1000 = np.histogram(w_sgh[(w_sgh>40)*(w_sgh<1000)], bins=100, density=True)
+b1000_c = 0.5*(b1000[1:] + b1000[:-1])
+p40, _ = curve_fit(lambda x, a, b: a * x + b, b40_c, np.log10(h40))
+p1000, _ = curve_fit(lambda x, a, b: a * x + b, b1000_c[h1000>0], np.log10(h1000[h1000>0]))
+log10w40_fit = p40[0] * b40_c + p40[1]
+log10w1000_fit = p1000[0] * b1000_c + p1000[1]
+
+def umeda_ewpdf(w, a):
+    p_w = np.zeros_like(w)
+    leg1 = np.exp(-1*w[w<=200] / 32.9)
+    leg2 = np.exp(-1*w[w>200] / 76.3)
+    p_w[w<=200] = a*leg1
+    p_w[w>200] = (a*leg1[-1]/leg2[0])*leg2
+    return p_w
+
+p_u, _ = curve_fit(umeda_ewpdf, b1000_c[h1000>0], h1000[h1000>0])
+
+p_w = umeda_ewpdf(b1000_c, p_u[0])
+
+p_w_res = umeda_ewpdf(0.5*(bins[1:]+bins[:-1]), p_u[0])
+
+fig, ax = plt.subplots(1, 1, figsize=(6, 6), constrained_layout=True)
+
+ax.plot(b1000_c, p_w, color=color4, linewidth=3, label='Umeda+25')
+ax.hist(w_m18[(w_m18>40)*(w_m18<1000)], bins=bins, linewidth=2.0, density=True, histtype='step', color=color3, label='Mason+18')
+ax.hist(w_t24[(w_t24>40)*(w_t24<1000)], bins=bins, linewidth=2.0, density=True, histtype='step', color=color2, label='Tang+24')
+# ax.hist(w_z14[(w_z14>40)*(w_z14<1000)], bins=bins, linewidth=2.0, density=True, histtype='step', color='magenta', label='Zheng+14')
+
+# heights, bin_edges = np.histogram(w_m18[(w_m18>40)*(w_m18<1000)], bins=bins, density=True)
+
+ax.hist(w_sgh[(w_sgh>40)*(w_sgh<1000)], bins=bins, linewidth=2.0, density=True, histtype='step', color=color1, linestyle='-', label='This Work')
+
+ax.set_xlabel(r'$\rm W_{\rm emerg}^{\rm Ly\alpha}$ [$\AA$]', fontsize=font_size)
+ax.set_ylabel(r'$\rm P(W_{\rm emerg}^{\rm Ly\alpha})$', fontsize=font_size)
+ax.legend(fontsize=int(font_size/1.5), loc='upper right')
+ax.set_yscale('log')
+ax.set_xlim(40, 650)
+ax.set_ylim(1e-6, 1e-1)
 figdir = '../out/'
-plt.savefig(f'{figdir}/laelf.pdf', bbox_inches='tight')
+plt.savefig(f'{figdir}/ewpdf.pdf', bbox_inches='tight')
 plt.show()

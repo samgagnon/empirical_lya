@@ -37,6 +37,61 @@ font_size = 30
 mpl.rcParams['xtick.labelsize'] = label_size 
 mpl.rcParams['ytick.labelsize'] = label_size
 
+def double_power(x, a, b1, b2, c):
+    """
+    Double power law function.
+    """
+    x = x - c
+    return a + x + np.log10(10**(x*b1) + 10**(x*b2))
+
+def sigmoid(x, L, x0, k, b):
+    """
+    Sigmoid function.
+    """
+    return L / (1 + np.exp(-k*(x - x0))) + b
+
+def lorentzian(x, x0, gamma, a, b):
+    """
+    Lorentzian function.
+    """
+    return a * (gamma**2) / ((x - x0)**2 + gamma**2) + b
+
+def mh_from_muv(muv):
+    """
+    Get log10 halo mass from UV magnitude using the fitted skew normal parameters.
+    """
+    # https://en.wikipedia.org/wiki/Skew_normal_distribution
+    # https://stats.stackexchange.com/questions/316314/sampling-from-skew-normal-distribution
+    popt_mu = [11.50962787, -1.25471915, -2.12854869, -21.99916644]
+    popt_std = [-0.50714459, -20.92567604, 1.72699987, 0.72541845]
+    popt_alpha = [-2.13037242e+01, 1.83486155e+00, 2.49700612e+00, 8.04770033e-03]
+    mu_val = double_power(muv, *popt_mu)
+    std_val = sigmoid(muv, *popt_std)
+    alpha_val = lorentzian(muv, *popt_alpha)
+    standard_normal_samples = np.random.normal(0, 1, size=len(muv))
+    p_flip = 0.5 * (1 + erf(-1*alpha_val*standard_normal_samples / np.sqrt(2)))
+    u_samples = np.random.uniform(0, 1, size=len(muv))
+    standard_normal_samples[u_samples < p_flip] *= -1
+    standard_normal_samples *= std_val
+    mh_samples = standard_normal_samples + mu_val
+    return mh_samples
+
+def vcirc(muv):
+    """
+    Returns circular velocity in km/s as a function of MUV 
+    at redshift 5.0.
+    """
+    log10_mh = mh_from_muv(muv)
+    return (log10_mh - 5.62)/3
+
+def t_cgm(dv, muv):
+    """
+    CGM transmission as a function of velocity offset and MUV.
+    """
+    v_circ = vcirc(muv)
+    tcgm = 0.5 * (1 - erf(1.25*((10**v_circ - dv)/(dv + 34))))
+    return tcgm
+
 # from Bouwens 2021 https://arxiv.org/pdf/2102.07775
 phi_5 = 0.79
 muv_star_5 = -21.1
@@ -104,7 +159,8 @@ def p_obs(lly, dv, lha, muv, theta, mode='wide'):
     p_w = normal_cdf(w_emerg, w_lim)
     p_muv = 1 - normal_cdf(10**muv, 6*(10**muv_lim))
     
-    return p_lya * p_ha * p_w * p_muv * p_v
+    # TODO remove the commented section
+    return p_lya * p_ha * p_w * p_muv# * p_v
 
 def line(x, m, b):
     """
@@ -152,22 +208,24 @@ _lum_lya_err_deep = lum_lya_err[deep]
 _lum_ha_deep = lum_ha[deep]
 _lum_ha_err_deep = lum_ha_err[deep]
 
-# T = np.load('../data/pca/A.npy')
+# T = np.load(f'{loaddir}/A.npy')
 I = np.array([[1,0,0],[0,1,0],[0,0,1]])
 A1 = np.array([[0,0,0],[0,0,-1],[0,1,0]])
 A2 = np.array([[0,0,1],[0,0,0],[-1,0,0]])
 A3 = np.array([[0,-1,0],[1,0,0],[0,0,0]])
 c1, c2, c3, c4 = 1, 1, 1/3, -1
-# c1, c2, c3, c4 = np.load('../data/pca/coefficients.npy')
+# c1, c2, c3, c4 = np.load(f'{loaddir}/coefficients.npy')
 T = c1 * I + c2 * A1 + c3 * A2 + c4 * A3
 
 NSAMPLES = 100000
-xc = np.load('../data/pca/xc.npy')
-xstd = np.load('../data/pca/xstd.npy')
-f = np.load('../data/pca/f.npy')
-f_err = np.load('../data/pca/f_err.npy')
-m1, m2, m3, b1, b2, b3, std1, std2, std3, w1, w2, f1, f2, fh = np.load('../data/pca/fit_params.npy')
-# m1, m2, m3, b1, b2, b3, std1, std2, std3, w1, w2, f1, f2, fh = np.load('../data/pca/fobs_fit_params.npy')
+# loaddir = '../data/pca'
+loaddir = '../data/cgm'
+xc = np.load(f'{loaddir}/xc.npy')
+xstd = np.load(f'{loaddir}/xstd.npy')
+f = np.load(f'{loaddir}/f.npy')
+f_err = np.load(f'{loaddir}/f_err.npy')
+m1, m2, m3, b1, b2, b3, std1, std2, std3, w1, w2, f1, f2, fh = np.load(f'{loaddir}/fit_params.npy')
+# m1, m2, m3, b1, b2, b3, std1, std2, std3, w1, w2, f1, f2, fh = np.load(f'{loaddir}/fobs_fit_params.npy')
 theta = [w1, w2, f1, f2, fh]
 
 muv_range = np.linspace(-22, -17, NSAMPLES)
@@ -193,7 +251,9 @@ lly = lly * xstd[0] + xc[0]
 dv = dv * xstd[1] + xc[1]
 lha = lha * xstd[2] + xc[2]
 
-# dv = 10**dv  # dv in km/s
+# Apply CGM transmission
+tcgm = t_cgm(dv, muv_sample)
+lly += np.log10(tcgm)
 
 _p_obs_wide = p_obs(10**lly, dv, 10**lha, muv_sample, theta, mode='wide')
 _p_obs_deep = p_obs(10**lly, dv, 10**lha, muv_sample, theta, mode='deep')
@@ -349,7 +409,7 @@ axs[2,2].set_xlim(-22, -17)
 # axs[2,1].plot(-21.5, 555, color=color1, marker='*', markersize=20)
 # axs[2,2].plot(-21.5, 0.04, color=color1, marker='*', markersize=20)
 
-figures_dir = '/mnt/c/Users/sgagn/OneDrive/Documents/phd/lyman_alpha/figures/'
+figures_dir = '../out/'
 plt.savefig(f'{figures_dir}/prop_hist.pdf', bbox_inches='tight')
 
 plt.show()
