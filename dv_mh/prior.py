@@ -14,6 +14,7 @@ from astropy.cosmology import Planck18, z_at_value
 from astropy import units as u
 from astropy.constants import c, k_B, m_p, e, m_e, G
 
+from scipy.integrate import trapezoid
 from scipy.special import gamma, erf
 from scipy.optimize import curve_fit, differential_evolution
 from scipy.interpolate import RegularGridInterpolator
@@ -98,63 +99,161 @@ def mh_from_muv(muv):
     mh_samples = standard_normal_samples + mu_val
     return mh_samples
 
-def get_stellar_mass(halo_masses, stellar_rng):
-    sigma_star = 0.2393
-    mp1 = 1e10
-    mp2 = np.exp(14.44)
-    M_turn = 10**(8.7)
-    a_star = 0.4709
-    a_star2 = -0.61
-    f_star10 = np.exp(-2.81)
-    omega_b = Planck18.Ob0
-    omega_m = Planck18.Om0
-    baryon_frac = omega_b/omega_m
-    
-    high_mass_turnover = ((mp2/mp1)**a_star + (mp2/mp1)**a_star2)/((halo_masses/mp2)**(-1*a_star)+(halo_masses/mp2)**(-1*a_star2))
-    stoc_adjustment_term = 0.5*sigma_star**2
-    low_mass_turnover = np.exp(-1*M_turn/halo_masses)*10**(stellar_rng*sigma_star - stoc_adjustment_term)
-    stellar_mass = f_star10 * baryon_frac * halo_masses * (high_mass_turnover * low_mass_turnover)
-    return stellar_mass
+# TOGGLE HERE
+# smsfr = 'sgh'
+# smsfr = 'davies'
+smsfr = 'nikolic'
 
-def get_sfr(stellar_mass, sfr_rng, z):
-    sigma_sfr_lim = 0.09297
-    sigma_sfr_idx = -0.01884
-    t_h = 1/Planck18.H(z).to('s**-1').value
-    t_star = 0.1676
-    sfr_mean = stellar_mass / (t_star * t_h)
-    sigma_sfr = sigma_sfr_idx * np.log10(stellar_mass/1e10) + sigma_sfr_lim
-    sigma_sfr[sigma_sfr < sigma_sfr_lim] = sigma_sfr_lim
-    stoc_adjustment_term = sigma_sfr * sigma_sfr / 2. # adjustment to the mean for lognormal scatter
-    sfr_sample = sfr_mean * 10**(sfr_rng*sigma_sfr - stoc_adjustment_term)
-    # seconds per year
-    return sfr_sample * 3.1557e7
-
-def interp_kuv(SFR, Mstar, z, bounds_error=True, fill_value=None, \
+if smsfr == 'sgh':
+    def interp_kuv(SFR, Mstar, z, bounds_error=False, fill_value=1.15e28, \
             interpolation_table_loc = '../data/interpolation_table.npy'):
-    """
-    Trilinear interpolation on a regular grid.
-    """
-    table = np.load(interpolation_table_loc)
-    SFR_grid = np.logspace(-5,5,100)
-    Ms_grid = np.logspace(3,13,100)
-    z_grid = np.linspace(5,15,10)
+        """
+        Trilinear interpolation on a regular grid.
+        """
+        table = np.load(interpolation_table_loc)
+        SFR_grid = np.logspace(-5,5,100)
+        Ms_grid = np.logspace(3,13,100)
+        z_grid = np.linspace(5,15,10)
 
-    interp = RegularGridInterpolator(
-        (z_grid, Ms_grid, SFR_grid),
-        table,
-        method="linear",
-        bounds_error=bounds_error,
-        fill_value=fill_value,
-    )
-    return interp((z,Mstar,SFR))
+        interp = RegularGridInterpolator(
+            (z_grid, Ms_grid, SFR_grid),
+            table,
+            method="linear",
+            bounds_error=bounds_error,
+            fill_value=fill_value,
+        )
+        return interp((z,Mstar,SFR))
 
-def get_muv(SFR, Mstar, z):
-    SIGMA_UV = 0.244947465229813069
-    kuv = interp_kuv(SFR, Mstar, z)
-    muv = -2.5 * np.log10(kuv * SFR) + 51.63
-    stoc_adjustment_term = 0.5 * (SIGMA_UV)**2 * np.log(10)**2
-    muv_sample = muv - (SIGMA_UV * np.random.normal(0, 1, size=len(muv))) -  stoc_adjustment_term
-    return muv_sample
+    def get_stellar_mass(halo_masses, stellar_rng):
+
+        sigma_star = 4.83e-2  # dex
+        mp1 = 1e10
+        mp2 = 1.78e11
+        M_turn = 10**(8.7)
+        a_star = 9.96e-1
+        a_star2 = -9.95e-1
+        f_star10 = 1.95e-2
+        omega_b = Planck18.Ob0
+        omega_m = Planck18.Om0
+        baryon_frac = omega_b/omega_m
+        
+        high_mass_turnover = ((mp2/mp1)**a_star + (mp2/mp1)**a_star2)/((halo_masses/mp2)**(-1*a_star)+(halo_masses/mp2)**(-1*a_star2))
+        stoc_adjustment_term = 0.5*sigma_star**2
+        low_mass_turnover = np.exp(-1*M_turn/halo_masses + stellar_rng*sigma_star - stoc_adjustment_term)
+        stellar_mass = f_star10 * baryon_frac * halo_masses * (high_mass_turnover * low_mass_turnover)
+        return stellar_mass
+    
+    def get_sfr(stellar_mass, sfr_rng, z):
+        sigma_sfr_lim = 3.82e-1  # dex
+        sigma_sfr_idx = -3.10e-1  # dex
+        t_h = 1/Planck18.H(z).to('s**-1').value
+        t_star = 3.80e-1
+        sfr_mean = stellar_mass * 3.1557e7 / (t_star * t_h)
+        sigma_sfr = sigma_sfr_idx * np.log10(stellar_mass/1e10) + sigma_sfr_lim
+        sigma_sfr[sigma_sfr < sigma_sfr_lim] = sigma_sfr_lim
+        stoc_adjustment_term = sigma_sfr * sigma_sfr / 2. # adjustment to the mean for lognormal scatter
+        sfr_sample = sfr_mean * np.exp(sfr_rng*sigma_sfr - stoc_adjustment_term)
+        return sfr_sample
+
+    def get_muv(sfr_sample, stellar_mass, z):
+        kuv = interp_kuv(sfr_sample, stellar_mass, z)
+        muv = -2.5 * np.log10(sfr_sample * kuv) + 51.64
+        return muv
+
+if smsfr == 'nikolic':
+    def get_stellar_mass(halo_masses, stellar_rng):
+        sigma_star = 0.2393
+        mp1 = 1e10
+        mp2 = 10**14.44
+        M_turn = 10**(8.7)
+        a_star = 0.4709
+        a_star2 = -0.61
+        f_star10 = np.exp(-2.81)
+        omega_b = Planck18.Ob0
+        omega_m = Planck18.Om0
+        baryon_frac = omega_b/omega_m
+        
+        high_mass_turnover = ((mp2/mp1)**a_star + (mp2/mp1)**a_star2)/((halo_masses/mp2)**(-1*a_star)+(halo_masses/mp2)**(-1*a_star2))
+        stoc_adjustment_term = 0.5*sigma_star**2*np.log(10)**2
+        low_mass_turnover = np.exp(-1*M_turn/halo_masses + stellar_rng*sigma_star - stoc_adjustment_term)
+        stellar_mass = f_star10 * baryon_frac * halo_masses * (high_mass_turnover * low_mass_turnover)
+        return stellar_mass
+
+    def get_sfr(stellar_mass, sfr_rng, z):
+        sigma_sfr_lim = 0.09297
+        sigma_sfr_idx = -0.01884
+        t_h = 1/Planck18.H(z).to('s**-1').value
+        t_star = 0.1676
+        sfr_mean = stellar_mass / (t_star * t_h)
+        sigma_sfr = sigma_sfr_idx * np.log10(stellar_mass/1e10) + sigma_sfr_lim
+        sigma_sfr[sigma_sfr < sigma_sfr_lim] = sigma_sfr_lim
+        stoc_adjustment_term = 0.5 * (sigma_sfr)**2 * np.log(10)**2  # adjustment to the mean for lognormal scatter
+        sfr_sample = sfr_mean * np.exp(sfr_rng*sigma_sfr - stoc_adjustment_term)
+        # seconds per year
+        return sfr_sample * 3.1557e7
+
+    def interp_kuv(SFR, Mstar, z, bounds_error=True, fill_value=None, \
+                interpolation_table_loc = '../data/interpolation_table.npy'):
+        """
+        Trilinear interpolation on a regular grid.
+        """
+        table = np.load(interpolation_table_loc)
+        SFR_grid = np.logspace(-5,5,100)
+        Ms_grid = np.logspace(3,13,100)
+        z_grid = np.linspace(5,15,10)
+
+        interp = RegularGridInterpolator(
+            (z_grid, Ms_grid, SFR_grid),
+            table,
+            method="linear",
+            bounds_error=bounds_error,
+            fill_value=fill_value,
+        )
+        return interp((z,Mstar,SFR))
+
+    def get_muv(SFR, Mstar, z):
+        SIGMA_UV = 0.244947465229813069
+        kuv = interp_kuv(SFR, Mstar, z)
+        muv = -2.5 * np.log10(kuv * SFR) + 51.64
+        stoc_adjustment_term = 0.5 * (SIGMA_UV)**2 * np.log(10)**2  # adjustment to the mean for lognormal scatter
+        muv_sample = muv - (SIGMA_UV * np.random.normal(0, 1, size=len(muv))) -  stoc_adjustment_term
+        return muv_sample
+
+elif smsfr == 'davies':
+
+    def get_stellar_mass(halo_masses, stellar_rng):
+        sigma_star = 0.5  / np.log(10)
+        mp1 = 1e10
+        mp2 = 2.8e11
+        M_turn = 10**(8.7)
+        a_star = 0.5
+        a_star2 = -0.61
+        f_star10 = 0.05
+        omega_b = Planck18.Ob0
+        omega_m = Planck18.Om0
+        baryon_frac = omega_b/omega_m
+        
+        high_mass_turnover = ((mp2/mp1)**a_star + (mp2/mp1)**a_star2)/((halo_masses/mp2)**(-1*a_star)+(halo_masses/mp2)**(-1*a_star2))
+        stoc_adjustment_term = 0.5*sigma_star**2
+        low_mass_turnover = np.exp(-1*M_turn/halo_masses)*10**(stellar_rng*sigma_star - stoc_adjustment_term)
+        stellar_mass = f_star10 * baryon_frac * halo_masses * (high_mass_turnover * low_mass_turnover)
+        return stellar_mass
+
+    def get_sfr(stellar_mass, sfr_rng, z):
+        sigma_sfr_lim = 0.19# / np.log(10)
+        sigma_sfr_idx = -0.12
+        t_h = 1/Planck18.H(z).to('s**-1').value
+        t_star = 0.5
+        sfr_mean = stellar_mass / (t_star * t_h)
+        sigma_sfr = sigma_sfr_idx * np.log10(stellar_mass/1e10) + sigma_sfr_lim
+        sigma_sfr[sigma_sfr < sigma_sfr_lim] = sigma_sfr_lim
+        stoc_adjustment_term = sigma_sfr * sigma_sfr / 2. # adjustment to the mean for lognormal scatter
+        sfr_sample = sfr_mean * 10**(sfr_rng*sigma_sfr - stoc_adjustment_term)
+        return sfr_sample
+
+    def get_muv(SFR, Mstar, z):
+        muv = -2.5 * (np.log10(SFR) + np.log10(3.1557e7) + np.log10(1.15e28)) + 51.64
+        return muv
 
 def mvir(rvir, z):
     """
@@ -166,7 +265,7 @@ def mvir(rvir, z):
     delta_c = 18 * np.pi**2 + 82 * (Planck18.Om(z) - 1) - 39 * (Planck18.Om(z) - 1)**2
     mvir = (4/3) * np.pi * rvir**3 * delta_c * rho_c
     return np.log10(mvir)
-
+# 
 def rvir(mh, z):
     """
     Calculate the virial radius given the halo mass and redshift.
@@ -180,96 +279,152 @@ def v_ff(r, mh):
     km_per_kpc = 3.09e16  # km/kpc
     return np.sqrt(G.to('kpc3 / (Msun * s2)').value * 10**mh / r) * km_per_kpc
 
-from halomod import TracerHaloModel
+from halomod.halo_model import MassFunction
 
-n_halos = 10000
+def ms_mh_flattening(mh, fstar_norm=1.0, alpha_star_low=0.5, M_knee=2.6e11):
+    """
+        Get scaling relations for SHMR based on Davies+in prep.
+        Parameters
+        ----------
+        mh: float,
+            halo mass at which we're evaluating the relation.
+        Returns
+        ----------
+        ms_mean: floats; optional,
+            a and b coefficient of the relation.
+    """
 
-hm_smt6 = TracerHaloModel(
-    z=6.0,  # Redshift
-    hmf_model="Tinker08",  # tinker 08 halo mass function
-    cosmo_params={"Om0": Planck18.Om0, "H0": Planck18.H0.value},
+    f_star_mean = fstar_norm
+    f_star_mean /= (mh / M_knee) ** (-alpha_star_low) + (mh / M_knee) ** 0.61 #knee denominator
+    f_star_mean *= (1e10 / M_knee) ** (-alpha_star_low) + (1e10 / M_knee) ** 0.61 #knee numerator
+    return np.minimum(f_star_mean, Planck18.Ob0 / Planck18.Om0) * mh
+
+def SFMS(Mstar, SFR_norm=1., z=9.25):
+    """
+        the functon returns SFR from Main sequence
+    """
+    b_SFR = -np.log10(SFR_norm) + np.log10(Planck18.H(z).to(u.yr**(-1)).value)
+
+    return Mstar * 10 ** b_SFR
+
+def gimme_dust(Muv, beta = None):
+    # from Kar+25, based on the fit from some 1999 paper and beta-Muv relation from Bouwens+15
+    if beta is None:
+        beta = -0.17 * Muv - 5.40
+    elif str(beta) == 'Hubble':
+        beta = -0.2 * (Muv+19.5) - 2
+    Auv = 4.43 + 1.99 * beta
+    return np.clip(Auv,0,5)
+
+param_MAP_new = [
+    -0.280636368880184506E+01, # log10 fstar norm
+    0.239311686215938429E+00,  # sigma star
+    0.167616139258982610E+00,  # SFR norm
+    0.470918493138135108E+00,  # alpha star low
+    0.929791798953653048E-01,  # sigma SFR 0
+    -0.188417610576141620E-01, # sigma SFR 1
+    0.144476204688384300E+02,  # log10 M_knee
+    0.244956626802721206E+00   # sigma UV
+]
+
+n_halos = 100000
+redshift = 8.0
+little_h = Planck18.h
+
+hmf_ST = MassFunction(z=redshift, Mmin=10, Mmax=15, dlog10m=0.05, hmf_model='SMT')
+
+mh_samples = np.random.choice(
+        hmf_ST.m / little_h,
+        p=hmf_ST.dndlnm * (little_h**3) / np.sum(hmf_ST.dndlnm * (little_h**3)),
+        size=n_halos
 )
 
-m, dndm = hm_smt6.m, hm_smt6.dndm
-dndm = dndm[m>1e10]
-m = m[m>1e10]
-p_m = dndm/np.sum(dndm)
+expected_num_halos = trapezoid(hmf_ST.dndlnm * (little_h**3), x=np.log(hmf_ST.m / little_h))
 
-from scipy.integrate import trapezoid
+m, dndm = hmf_ST.m/Planck18.h, hmf_ST.dndm*Planck18.h**3  # Msun, comoving Mpc^-3 Msun^-1
+N_HALOS_MPC3 = trapezoid(hmf_ST.dndlnm, x=np.log(hmf_ST.m)) * (Planck18.h**3)  # comoving Mpc^-3
+EFFECTIVE_VOLUME = n_halos / N_HALOS_MPC3
+mh = np.random.choice(m, size=n_halos, p=dndm/np.sum(dndm))
 
-EFFECTIVE_VOLUME = n_halos/trapezoid(dndm, x=m)
-print(f"Effective Volume: {EFFECTIVE_VOLUME:.2e} Mpc^3")
-# quit()
+# verify_hmf = True
+verify_hmf = False
+if verify_hmf:
+    edges = np.logspace(10, 15, num=60)
+    widths = np.diff(edges)
+    dlnm = np.log(edges[1:]) - np.log(edges[:-1])
+    centres = (edges[:-1] * np.exp(dlnm / 2)).astype("f4")
+    hist_s, _ = np.histogram(mh_samples, edges)
+    mf_s = hist_s / EFFECTIVE_VOLUME / dlnm
 
-mh = np.random.choice(m, size=n_halos, p=p_m)
-# mh = 10**np.random.uniform(11, 13, size=n_halos)
-sfr_rng = np.random.normal(0, 1, size=n_halos)
-stellar_rng = np.random.normal(0, 1, size=n_halos)
+    fig, axs = plt.subplots(1, 1, figsize=(8, 6), constrained_layout=True)
+    axs.loglog(centres, mf_s, color="C1", label="binned reference sample")
+    axs.loglog(
+        hmf_ST.m / little_h,
+        hmf_ST.dndlnm * (little_h**3),
+        color="C0",
+        linewidth=2,
+        linestyle=":",
+        label="reference HMF",
+    )
+    axs.set_xlabel(r'$M_h$ [M$_\odot$]', fontsize=font_size)
+    axs.set_ylabel(r'dn/dln$M_h$ [Mpc$^{-3}$]', fontsize=font_size)
+    axs.legend(fontsize=int(font_size*0.6))
+    plt.show()
+    quit()
 
-# def get_stellar_mass(halo_masses, stellar_rng):
-#     sigma_star = 0.5
-#     mp1 = 1e10
-#     mp2 = 2.8e11
-#     M_turn = 10**(8.7)
-#     a_star = 0.5
-#     a_star2 = -0.61
-#     f_star10 = 0.05
-#     omega_b = Planck18.Ob0
-#     omega_m = Planck18.Om0
-#     baryon_frac = omega_b/omega_m
-    
-#     high_mass_turnover = ((mp2/mp1)**a_star + (mp2/mp1)**a_star2)/((halo_masses/mp2)**(-1*a_star)+(halo_masses/mp2)**(-1*a_star2))
-#     stoc_adjustment_term = 0.5*sigma_star**2
-#     low_mass_turnover = np.exp(-1*M_turn/halo_masses + stellar_rng*sigma_star - stoc_adjustment_term)
-#     stellar_mass = f_star10 * baryon_frac * halo_masses * (high_mass_turnover * low_mass_turnover)
-#     return stellar_mass
 
-# def get_sfr(stellar_mass, sfr_rng, z):
-#     sigma_sfr_lim = 0.19
-#     sigma_sfr_idx = -0.12
-#     t_h = 1/Planck18.H(z).to('s**-1').value
-#     t_star = 0.5
-#     sfr_mean = stellar_mass / (t_star * t_h)
-#     sigma_sfr = sigma_sfr_idx * np.log10(stellar_mass/1e10) + sigma_sfr_lim
-#     sigma_sfr[sigma_sfr < sigma_sfr_lim] = sigma_sfr_lim
-#     stoc_adjustment_term = sigma_sfr * sigma_sfr / 2. # adjustment to the mean for lognormal scatter
-#     sfr_sample = sfr_mean * np.exp(sfr_rng*sigma_sfr - stoc_adjustment_term)
-#     return sfr_sample
+ms_from_mh = ms_mh_flattening(
+    mh,
+    alpha_star_low=param_MAP_new[3],
+    fstar_norm=10**param_MAP_new[0],
+    M_knee=10**param_MAP_new[6]
+)
 
-# def get_muv(SFR, Mstar, z):
-#     muv = -2.5 * (np.log10(SFR) + np.log10(3.1557e7) + np.log10(1.15e28)) + 51.64
-#     return muv
+ms_scatter = np.random.normal(0, param_MAP_new[1], size=n_halos)
+stellar_mass = ms_from_mh * 10**(ms_scatter + 0.5 * param_MAP_new[1]**2 * np.log(10)**2)
 
-mstar = get_stellar_mass(mh, stellar_rng)
-sfr = get_sfr(mstar, sfr_rng, z=6.0)
-muv = get_muv(sfr, mstar, z=6.0)
+sfr_from_ms = SFMS(ms_from_mh, SFR_norm=param_MAP_new[2], z=redshift)
+sigma_sfr = np.maximum(
+    param_MAP_new[4] + param_MAP_new[5] * np.log10(stellar_mass / 1e10),
+    param_MAP_new[4]
+)
+sfr_scatter = np.random.normal(0, sigma_sfr, size=n_halos)
+sfr = sfr_from_ms * 10**(sfr_scatter + 0.5 * sigma_sfr**2 * np.log(10)**2)
+
+muv = get_muv(sfr, stellar_mass, z=redshift)
+muv_scatter = np.random.normal(0, param_MAP_new[7], size=n_halos)
+muv = muv + muv_scatter
+
+Auv = gimme_dust(muv)
+muv += Auv
 
 # from Bouwens 2021 https://arxiv.org/pdf/2102.07775
-phi_5 = 0.79
-muv_star_5 = -21.1
-alpha_5 = -1.74
+def uvlf_params(z):
+    muv_star = -21.03 - 0.04 * (z - 6)
+    phi = 4e-4 * 10**(-0.33*(z - 6) - 0.024*(z - 6)**2)
+    alpha = -1.94 - 0.11 * (z - 6)
+    return phi, muv_star, alpha
 
 def schechter(muv, phi, muv_star, alpha):
-    return (0.4*np.log(10))*phi*(10**(0.4*(muv_star - muv)))**alpha*\
+    return (0.4*np.log(10))*phi*(10**(0.4*(muv_star - muv)))**(alpha + 1)*\
         np.exp(-10**(0.4*(muv_star - muv)))
 
 muv_bins = np.linspace(-24, -17, 10)
 muv_centers = 0.5 * (muv_bins[1:] + muv_bins[:-1])
 
-p_muv = schechter(muv_centers, phi_5, muv_star_5, alpha_5) * 1e3 / EFFECTIVE_VOLUME
-p_muv_err = np.sqrt(schechter(muv_centers, phi_5, muv_star_5, alpha_5) * 1e3) / EFFECTIVE_VOLUME
+uvlf_p = uvlf_params(redshift)
+p_muv = schechter(muv_centers, *uvlf_p)
 
-heights, _ = np.histogram(muv, bins=muv_bins)
-heights = heights / (muv_bins[1] - muv_bins[0])
-p_muv_sim = heights / EFFECTIVE_VOLUME
-p_muv_sim_err = np.sqrt(heights) / EFFECTIVE_VOLUME
-print(p_muv_sim, p_muv_sim_err)
+heights, _ = np.histogram(muv, bins=muv_bins, density=False)
+p_muv_sim = heights / (muv_bins[1] - muv_bins[0]) / EFFECTIVE_VOLUME
+p_muv_sim_err = np.sqrt(heights) / (muv_bins[1] - muv_bins[0]) / EFFECTIVE_VOLUME
 
-plt.errorbar(muv_centers, p_muv_sim, yerr=p_muv_sim_err, fmt='o', color='cyan', label='Simulated z=6')
-plt.errorbar(muv_centers, p_muv, yerr=p_muv_err, fmt='o', color='orange', label='Bouwens+21 z=5')
-plt.yscale('log')
-plt.xlabel(r'${\rm M}_{\rm UV}$', fontsize=font_size)
-plt.ylabel(r'$\phi$ [Mpc$^{-3}$ mag$^{-1}$]', fontsize=font_size)
+fig, axs = plt.subplots(1, 1, figsize=(8, 6), constrained_layout=True)
+axs.errorbar(muv_centers, p_muv_sim, yerr=p_muv_sim_err, fmt='o', color='cyan', label='This Work')
+axs.plot(muv_centers, p_muv, linestyle='-', color='orange', label='Bouwens+21')
+axs.set_yscale('log')
+axs.set_xlabel(r'${\rm M}_{\rm UV}$', fontsize=font_size)
+axs.set_ylabel(r'$\phi$ [Mpc$^{-3}$ mag$^{-1}$]', fontsize=font_size)
 plt.show()
 quit()
 
