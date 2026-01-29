@@ -147,122 +147,49 @@ muv_obs = muv_range + auv
 d_obs_dmuv = np.gradient(muv_obs, muv_range)
 dust_correction = np.log10(d_obs_dmuv)
 
-for redshift in [6.0, 7.0, 8.0]:
-    # get halo mass function
-    hmf_ST = MassFunction(z=redshift, Mmin=5, Mmax=15, dlog10m=0.01, hmf_model='SMT')
-    m, dndlog10m = hmf_ST.m/Planck18.h, \
-        hmf_ST.dndlog10m*Planck18.h**3*np.exp(-5e8/(hmf_ST.m/Planck18.h) )  # Msun, comoving Mpc^-3 Msun^-1
-    dndlog10m = np.interp(mh_range, np.log10(m), dndlog10m)
-    dndlog10m_list.append(dndlog10m)
-    muv_b21, logphi_b21, logphi_err_b21_up, logphi_err_b21_low = get_ref_uvlf(redshift)
-    muv_b21_dict[redshift] = muv_b21
-    logphi_b21_dict[redshift] = logphi_b21
-    logphi_err_b21_up_dict[redshift] = logphi_err_b21_up
-    logphi_err_b21_low_dict[redshift] = logphi_err_b21_low
-dndlog10m_dict = {6.0: dndlog10m_list[0],
-                    7.0: dndlog10m_list[1],
-                    8.0: dndlog10m_list[2]}
+redshift = 6.0
 
-def objective_at_redshift(params, redshift):
+# get halo mass function
+hmf_ST = MassFunction(z=redshift, Mmin=5, Mmax=15, dlog10m=0.01, hmf_model='SMT')
+m, dndlog10m = hmf_ST.m/Planck18.h, \
+    hmf_ST.dndlog10m*Planck18.h**3*np.exp(-5e8/(hmf_ST.m/Planck18.h) )  # Msun, comoving Mpc^-3 Msun^-1
+dndlog10m = np.interp(mh_range, np.log10(m), dndlog10m)
 
-    stellar_params = params[:2]
-    sfr_params = params[2:]
-    # sfr_params = [0.0929, -0.0184]
+# result = {'x': [10**-3.0229,  10**12,  0.3, -0.0522]}
+result = {'x': [10**-2.5156,  10**12.147,  0.378299]}
+stellar_params = result['x'][:2]
+sfr_params = result['x'][2:]
 
-    _, p_mstar = get_p_stellar_mass(mh_range, stellar_params)
-    _, p_sfr = get_p_sfr(mstar_range, sfr_params, redshift=redshift)
-    _, p_muv = get_p_muv(sfr_range, mstar_range, redshift=redshift)
+mstar_range, p_mstar = get_p_stellar_mass(mh_range, stellar_params)
+sfr_range, p_sfr = get_p_sfr(mstar_range, sfr_params, redshift=redshift)
+muv_range, p_muv = get_p_muv(sfr_range, mstar_range, redshift=redshift)
 
-    # propagate through to get P(M_UV|M_h)
-    p_muv_mh = np.einsum(
-        'hs,sf,fsu -> hu',
-        p_mstar,      # (Nh, Ns)
-        p_sfr,        # (Ns, Nf)
-        p_muv         # (Nf, Ns, Nu)
-    )
+# propagate through to get P(M_UV|M_h)
+p_muv_mh = np.einsum(
+    'hs,sf,fsu -> hu',
+    p_mstar,      # (Nh, Ns)
+    p_sfr,        # (Ns, Nf)
+    p_muv         # (Nf, Ns, Nu)
+)
 
-    p_muv_mh /= 100
-
-    # propagate dn/dlog10Mh through to get the UVLF
-    phi_muv = np.einsum(
-        'h,hu -> u',
-        dndlog10m_dict[redshift],    # (Nh,)
-        p_muv_mh      # (Nh, Nu)
-    )
-    log_p_muv = np.log10(phi_muv) + dust_correction
-    
-    log_p_muv = np.interp(muv_b21_dict[redshift], muv_range, log_p_muv)
-
-    sigma = np.ones_like(logphi_b21_dict[redshift])
-    sigma[log_p_muv > logphi_b21_dict[redshift]] = logphi_err_b21_up_dict[redshift][log_p_muv > logphi_b21_dict[redshift]]
-    sigma[log_p_muv <= logphi_b21_dict[redshift]] = logphi_err_b21_low_dict[redshift][log_p_muv <= logphi_b21_dict[redshift]]
-    chi2 = np.sum(((log_p_muv - logphi_b21_dict[redshift])/sigma)**2)
-    
-    return chi2
-
-def objective(params):
-    stellar_params = params[:2]
-    stellar_params[0] = 10**stellar_params[0]
-    stellar_params[1] = 10**stellar_params[1]
-
-    return objective_at_redshift(params, redshift=6.0) + \
-            objective_at_redshift(params, redshift=8.0)
-            # objective_at_redshift(params, redshift=7.0) + \ 
-
-# bounds = [(-4, -1), (11, 15), (0.05, 0.3), (-0.2, 0.0)]
-bounds = [(-4, -1), (11, 15), (0.01, 0.6)]
-
-# result = differential_evolution(objective, bounds, maxiter=100, disp=True)
-# print('Optimal parameters:', result.x)
-# quit()
+p_muv_mh /= 100
 
 plt.figure(figsize=(8,6), constrained_layout=True)
+plt.contourf(muv_range, mh_range, p_muv_mh, levels=50, cmap='hot')
+plt.xlabel(r'$M_{UV}$', fontsize=font_size)
+plt.ylabel(r'$\log_{10} M_h$ [M$_\odot$]', fontsize=font_size)
+plt.title(f'Redshift z={redshift}', fontsize=font_size)
+plt.gca().invert_xaxis()
+plt.show()
 
-colors = ['cyan', 'orange', 'lime', 'magenta']
-for i, redshift in enumerate([6.0, 7.0, 8.0]):
-
-    muv_b21, logphi_b21, logphi_err_b21_up, logphi_err_b21_low = get_ref_uvlf(redshift)
-    # get halo mass function
-    hmf_ST = MassFunction(z=redshift, Mmin=5, Mmax=15, dlog10m=0.01, hmf_model='SMT')
-    m, dndlog10m = hmf_ST.m/Planck18.h, \
-        hmf_ST.dndlog10m*Planck18.h**3*np.exp(-5e8/(hmf_ST.m/Planck18.h) )  # Msun, comoving Mpc^-3 Msun^-1
-    dndlog10m = np.interp(mh_range, np.log10(m), dndlog10m)
-
-    # result = {'x': [10**-3.0229,  10**12,  0.3, -0.0522]}
-    result = {'x': [10**-2.5156,  10**12.147,  0.378299]}
-    stellar_params = result['x'][:2]
-    sfr_params = result['x'][2:]
-
-    mstar_range, p_mstar = get_p_stellar_mass(mh_range, stellar_params)
-    sfr_range, p_sfr = get_p_sfr(mstar_range, sfr_params, redshift=redshift)
-    muv_range, p_muv = get_p_muv(sfr_range, mstar_range, redshift=redshift)
-
-    # propagate through to get P(M_UV|M_h)
-    p_muv_mh = np.einsum(
-        'hs,sf,fsu -> hu',
-        p_mstar,      # (Nh, Ns)
-        p_sfr,        # (Ns, Nf)
-        p_muv         # (Nf, Ns, Nu)
-    )
-
-    p_muv_mh /= 100
-
-    # propagate dn/dlog10Mh through to get the UVLF
-    phi_muv = np.einsum(
-        'h,hu -> u',
-        dndlog10m_dict[redshift],    # (Nh,)
-        p_muv_mh                     # (Nh, Nu)
-    )
-    log_p_muv = np.log10(phi_muv) + dust_correction
-
-    muv_b21, logphi_b21, logphi_err_b21_up, logphi_err_b21_low = get_ref_uvlf(redshift)
-
-    # plt.plot(muv_range, p_muv_ref, label=r'${\it Hubble}$', color='cyan')
-    plt.errorbar(muv_b21, logphi_b21, yerr=[logphi_err_b21_low, logphi_err_b21_up], fmt='o', color=colors[i])
-    plt.plot(muv_range, log_p_muv, label=r'$z=$'+str(redshift), color=colors[i])
-plt.xlim(-24, -16)
-plt.ylim(-6.5, -1)
-plt.xlabel(r'${\rm M}_{\rm UV}$', fontsize=font_size)
-plt.ylabel(r'$\phi(M_{\rm UV})$ [cMpc$^{-3}$ mag$^{-1}$]', fontsize=font_size)
-plt.legend(fontsize=int(font_size*0.8))
+# now show conditionals for select UV magnitudes
+for muv_select in [-22, -20, -18, -16]:
+    idx = np.argmin(np.abs(muv_range - muv_select))
+    p_mh_given_muv = p_muv_mh[:, idx]
+    p_mh_given_muv /= trapezoid(p_mh_given_muv, x=mh_range)
+    plt.plot(mh_range, p_mh_given_muv, label=f'$M_{{UV}}={muv_select}$')
+plt.xlabel(r'$\log_{10} M_h$ [M$_\odot$]', fontsize=font_size)
+plt.ylabel(r'$P(M_h | M_{UV})$', fontsize=font_size)
+plt.title(f'Redshift z={redshift}', fontsize=font_size)
+plt.legend(fontsize=font_size)
 plt.show()
