@@ -11,7 +11,7 @@ from astropy.constants import c, k_B, m_p, e, m_e
 
 from scipy.integrate import trapezoid
 from scipy.special import gamma, erf
-from scipy.optimize import differential_evolution
+from scipy.optimize import differential_evolution, curve_fit
 
 import matplotlib.pyplot as plt
 rc = {"font.family" : "serif", 
@@ -112,6 +112,17 @@ def line(x, m, b):
     """
     return m * (x + 18.5) + b
 
+def delta_nu(T):
+    """
+    Returns the Doppler width of a Lya line with temperature T
+    """
+    freq_Lya = c / (1215.67 * u.AA)
+    return ((freq_Lya/c) * np.sqrt(2*k_B*T/m_p.to('kg'))).to('Hz').value
+
+def IME(x):
+    return x**(9/2)/(1 - x) + (9/7)*x**(7/2) + (9/5)*x**(5/2) + \
+        3*x**(3/2) + 9*x**(1/2) - np.log(1 + x**(1/2)) + np.log(1 - x**(1/2))
+
 # T = np.load('../data/pca/A.npy')
 I = np.array([[1,0,0],[0,1,0],[0,0,1]])
 A1 = np.array([[0,0,0],[0,0,-1],[0,1,0]])
@@ -184,6 +195,91 @@ p_lla /= trapezoid(p_lla, lla_range)
 
 lum_40A = (2.47e15/1215.67)*40*10**(0.4*(51.64 - (-18.5)))
 log_lum_40A = np.log10(lum_40A)
+
+
+r_bubble_grid = np.logspace(-2, 1.5, 10)  # pMpc
+z_shift = 13.0 - z_at_value(Planck18.luminosity_distance, 
+                            Planck18.luminosity_distance(13.0) - r_bubble_grid*u.Mpc).value
+
+pval, pcov = curve_fit(lambda r, a, b: a*r**b, r_bubble_grid, z_shift)
+# print(pval)
+
+# plt.plot(r_bubble_grid, z_shift, marker='o')
+# plt.plot(r_bubble_grid, pval[0]*r_bubble_grid**pval[1])
+# plt.xscale('log')
+# plt.yscale('log')
+# plt.show()
+# quit()
+
+def get_post_transmission(dv, r_bubble):
+    """
+    Get Delta v boost factor and transmission factor after transmission through the IGM 
+    for a given velocity offset dv (in km/s) and bubble size (in pMpc).
+    """
+    ############ IGM TRANSMISSION ############
+
+    sigma = (dv / 3) / 2.355  # convert FWHM to sigma
+    dv_space = np.linspace(0, 1000, 100)
+    emergent_profile = np.exp(-1*((dv_space[:, np.newaxis] - dv[np.newaxis, :])/sigma)**2)/(np.sqrt(np.pi)*sigma)
+    emergent_profile[np.isnan(emergent_profile)] = 0.0
+
+    # prefactor for damping wing
+    decay_factor = 6.25e8#*u.s**-1
+    ra = (decay_factor/(4*np.pi*delta_nu(1e4*u.K)))
+    prefactor = ra/np.pi
+
+    z_sys = redshift
+    c_kps = c.to('km/s').value
+    z_rel = dv_space / c_kps + z_sys
+    ze = 5.0
+    z_shift = pval[0]*r_bubble**pval[1]
+    zb = 13.0 - z_shift # modify by bubble size in proper units
+    miralda_escude = ((1+zb[np.newaxis, :])/(1+z_rel[:, np.newaxis]))**(3/2) * \
+                    (IME((1+zb[np.newaxis, :])/(1+z_rel[:, np.newaxis])) - IME((1+ze)/(1+z_rel[:, np.newaxis])))
+    neutral_fraction = 1.0 # assume fully neutral IGM outside of bubble
+    density = 0.0 # mean density
+    integrand = (1 + density)*neutral_fraction*miralda_escude
+    tau = integrand * prefactor
+    transmission_factor = np.exp(-1*tau)
+
+    # TODO check the indices here
+    observed_profile = emergent_profile.T[:, np.newaxis, ::-1] * transmission_factor[..., np.newaxis]
+    observed_fraction = trapezoid(observed_profile, dv_space, axis=-1)
+
+    dv_boost_factor = dv_space[np.argmax(observed_profile, axis=-1)]/dv[np.newaxis, :]
+
+    # plt.imshow(observed_fraction, aspect='auto', origin='lower',
+    #            extent=[dv[0], dv[-1], dv_space[0], dv_space[-1]])
+    # plt.colorbar(label='Observed Lya profile after IGM transmission')
+    # plt.xlabel(r'$\Delta v_{\rm emerg}$ [km s$^{-1}$]')
+    # plt.ylabel(r'Observed velocity [km s$^{-1}$]')
+    # plt.show()
+    # quit()
+
+    return observed_fraction, dv_boost_factor
+
+r_bubble = 1.0  # pMpc
+dv_vals = np.linspace(10, 500, 100)
+r_bubble_vals = np.linspace(0.1, 1.5, 100)
+
+transmission, dv_boost = get_post_transmission(dv_vals, r_bubble_vals)
+
+fig, axs = plt.subplots(1, 2, figsize=(12,6), constrained_layout=True)
+
+axs[0].pcolormesh(dv_vals, r_bubble_vals, transmission, cmap=cmap)
+axs[0].set_xlabel(r'$\Delta v_{\rm emerg}$ [km s$^{-1}$]', fontsize=font_size)
+axs[0].set_ylabel(r'Bubble size [pMpc]', fontsize=font_size)
+cbar = plt.colorbar(axs[0].collections[0], ax=axs[0])
+cbar.set_label(r'$T_{\rm IGM}$', fontsize=font_size)
+
+axs[1].pcolormesh(dv_vals, r_bubble_vals, np.log10(dv_boost), cmap=cmap)
+axs[1].set_xlabel(r'$\Delta v_{\rm emerg}$ [km s$^{-1}$]', fontsize=font_size)
+axs[1].set_ylabel(r'Bubble size [pMpc]', fontsize=font_size)
+cbar = plt.colorbar(axs[1].collections[0], ax=axs[1])
+cbar.set_label(r'$\Delta v_{\rm obs}/\Delta v_{\rm emerg}$', fontsize=font_size)
+plt.show()
+
+quit()
 
 v_lim_range = np.linspace(100, 500, 100)
 p_40A = []
